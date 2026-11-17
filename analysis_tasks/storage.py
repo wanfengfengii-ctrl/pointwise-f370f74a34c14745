@@ -1,6 +1,6 @@
 import json
 from archive import atomic
-from analysis_tasks.bindings import TaskBinding, binding_fingerprint
+from analysis_tasks.bindings import binding_from_data, binding_fingerprint
 
 class TaskStore:
     def __init__(self, connection):
@@ -26,7 +26,7 @@ class TaskStore:
             (task_id,)).fetchone()
         if row is None:
             return None
-        binding = TaskBinding.from_data(json.loads(row[1]))
+        binding = binding_from_data(json.loads(row[1]))
         if binding.task_id != task_id or binding_fingerprint(binding) != row[0]:
             raise ValueError("task binding integrity failure")
         return binding, row[2]

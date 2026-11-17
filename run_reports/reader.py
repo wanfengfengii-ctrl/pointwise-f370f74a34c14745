@@ -2,10 +2,13 @@ import hashlib
 from archive import atomic
 import json
 from analysis_tasks.storage import TaskStore
-from analysis_tasks.bindings import binding_fingerprint
+from analysis_tasks.bindings import TaskBinding, GroupTaskBinding, binding_fingerprint
 from run_reports.publication import canonical_report
 from run_reports.windows import build_window_layout
-from run_reports.validation import validate_joint_statistics, validate_occupancy_conservation
+from run_reports.group_windows import build_group_window_layout
+from run_reports.validation import (validate_joint_statistics,
+                                    validate_occupancy_conservation,
+                                    validate_group_occupancy_conservation)
 
 class ReportNotPublished(LookupError):
     pass
@@ -22,6 +25,8 @@ def _read_report(connection, task_id):
         task = TaskStore(connection).load_task(task_id)
     except (ValueError, TypeError, KeyError) as error:
         raise ArchiveIntegrityError("invalid task binding") from error
+    if task is not None and isinstance(task[0], GroupTaskBinding):
+        raise ValueError("task is a group analysis")
     row = connection.execute(
         "SELECT body FROM run_reports WHERE task_id=?", (task_id,)).fetchone()
     receipt_row = connection.execute(
@@ -56,6 +61,54 @@ def _read_report(connection, task_id):
             raise ArchiveIntegrityError("report dimension mismatch")
         validate_joint_statistics(body["mean"], body["covariance"])
         validate_occupancy_conservation(binding, body["mean"], body["covariance"])
+    except (ValueError, TypeError, KeyError, ArithmeticError) as error:
+        raise ArchiveIntegrityError("invalid archived report") from error
+    body["receipt"] = receipt
+    return body
+
+def read_group_report(connection, task_id):
+    with atomic(connection):
+        return _read_group_report(connection, task_id)
+
+def _read_group_report(connection, task_id):
+    try:
+        task = TaskStore(connection).load_task(task_id)
+    except (ValueError, TypeError, KeyError) as error:
+        raise ArchiveIntegrityError("invalid task binding") from error
+    if task is not None and isinstance(task[0], TaskBinding):
+        raise ValueError("task is a single-device analysis")
+    row = connection.execute(
+        "SELECT body FROM run_reports WHERE task_id=?", (task_id,)).fetchone()
+    receipt_row = connection.execute(
+        "SELECT receipt_id,body FROM publication_receipts WHERE task_id=?",
+        (task_id,)).fetchone()
+    if row is None and receipt_row is None and (task is None or task[1] is None):
+        raise ReportNotPublished(task_id)
+    if task is None or row is None or receipt_row is None or task[1] != receipt_row[0]:
+        raise ArchiveIntegrityError("incomplete publication")
+    try:
+        body, receipt = json.loads(row[0]), json.loads(receipt_row[1])
+        binding = task[0]
+        digest = hashlib.sha256(canonical_report(body).encode()).hexdigest()
+        input_id = binding_fingerprint(binding)
+        expected_id = hashlib.sha256((input_id + ":" + digest).encode()).hexdigest()
+        layout = build_group_window_layout(binding.devices, binding.windows)
+        expected = {"task_id": task_id, "input_id": input_id,
+                    "report_sha256": digest, "receipt_id": expected_id}
+        if receipt != expected or receipt_row[0] != expected_id:
+            raise ArchiveIntegrityError("receipt mismatch")
+        identities = {"task_id": task_id, "input_id": input_id,
+                      "group_ref": [binding.group_ref.revision_id, binding.group_ref.digest],
+                      "devices": [device.report_data() for device in binding.devices],
+                      "prefix": binding.prefix,
+                      "windows": [[w.left, w.right] for w in binding.windows],
+                      "dimensions": [list(d) for d in layout.dimensions]}
+        if any(body.get(key) != value for key, value in identities.items()):
+            raise ArchiveIntegrityError("report binding mismatch")
+        if len(body["mean"]) != len(layout.dimensions):
+            raise ArchiveIntegrityError("report dimension mismatch")
+        validate_joint_statistics(body["mean"], body["covariance"])
+        validate_group_occupancy_conservation(binding, body["mean"], body["covariance"])
     except (ValueError, TypeError, KeyError, ArithmeticError) as error:
         raise ArchiveIntegrityError("invalid archived report") from error
     body["receipt"] = receipt

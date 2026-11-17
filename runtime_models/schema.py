@@ -11,6 +11,11 @@ class ModelRef:
     digest: str
 
 @dataclass(frozen=True)
+class GroupRef:
+    revision_id: str
+    digest: str
+
+@dataclass(frozen=True)
 class ModelDefinition:
     states: tuple
     transition: tuple

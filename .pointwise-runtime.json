@@ -2,6 +2,6 @@
   "version": 1,
   "kind": "cli",
   "setup": [],
-  "verify": ["python3.11", "-B", "-m", "unittest", "discover", "-s", "tests", "-t", ".", "-v"],
+  "verify": ["python3.11", "-B", "run_checks.py"],
   "demo": ["python3.11", "-B", "demo.py"]
 }
